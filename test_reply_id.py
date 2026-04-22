@@ -1,8 +1,7 @@
 """
-Test that _scrape_new_reply_id returns the reply's own ID, not the parent comment ID.
-
-Uses a video+comment that already has replies in targets_s1.json — no new posting needed.
-Just opens the thread, expands replies, and checks what ID the scraper returns.
+Diagnostic: navigate to a video normally, find a thread that has replies,
+expand them, then dump every attribute and link we can find inside the reply
+elements — so we know exactly what YouTube puts in the DOM for replies.
 """
 import os
 import time
@@ -15,58 +14,57 @@ os.environ["PROFILE_PATH"] = os.getenv("PROFILE_ACCOUNT2", "profiles/account2")
 
 from playwright.sync_api import sync_playwright
 from browser_helper import get_browser_context, patch_page
-from comment_poster import (
-    _navigate_to_video, _wait_for_load, _dismiss_consent_banner,
-    _sort_comments_newest, _scrape_new_reply_id,
-)
+from comment_poster import _wait_for_load, _dismiss_consent_banner, _sort_comments_newest
 
-# A video+comment known to have replies (from targets_s1.json)
 VIDEO_ID = "IiO5gbg4dUw"
-PARENT_COMMENT_ID = "UgwGYnMqVozNLIEveNt4AaABAg"
-PARENT_COMMENT_TEXT = "I tried handling a ChinatoUS shipment myself"
 
-print(f"[TEST-REPLY-ID] Video:  {VIDEO_ID}")
-print(f"[TEST-REPLY-ID] Parent: {PARENT_COMMENT_ID}")
-print()
+print(f"[DIAG] Navigating normally to {VIDEO_ID} (no &lc= parameter)")
 
 with sync_playwright() as p:
     context = get_browser_context(p)
     page = context.new_page()
     patch_page(page)
     try:
-        page.goto(f"https://www.youtube.com/watch?v={VIDEO_ID}&lc={PARENT_COMMENT_ID}")
+        page.goto(f"https://www.youtube.com/watch?v={VIDEO_ID}")
         _wait_for_load(page)
         _dismiss_consent_banner(page)
 
-        # Scroll to load comments
-        for _ in range(20):
+        # Scroll until comment threads appear
+        print("[DIAG] Scrolling to load comments...")
+        for _ in range(25):
             if page.query_selector("ytd-comment-thread-renderer"):
                 break
             page.evaluate("window.scrollBy(0, 600)")
             time.sleep(random.uniform(0.5, 1.0))
 
-        # Find the target thread
-        target_thread = None
-        for _ in range(10):
-            highlighted = page.query_selector(
-                "ytd-comment-thread-renderer[is-highlighted], "
-                "ytd-comment-thread-renderer.iron-selected"
-            )
-            if highlighted:
-                target_thread = highlighted
-                print("[TEST-REPLY-ID] Found highlighted thread")
-                break
-            page.evaluate("window.scrollBy(0, 600)")
-            time.sleep(random.uniform(0.8, 1.2))
-
-        if not target_thread:
-            # fallback: first thread
-            target_thread = page.query_selector("ytd-comment-thread-renderer")
-            print("[TEST-REPLY-ID] Using first thread as fallback")
-
-        if not target_thread:
-            print("[TEST-REPLY-ID] ABORT — could not find comment thread")
+        thread_count = len(page.query_selector_all("ytd-comment-thread-renderer"))
+        print(f"[DIAG] {thread_count} comment threads loaded")
+        if thread_count == 0:
+            print("[DIAG] ABORT — no threads found")
             raise SystemExit(1)
+
+        # Find the first thread that has a replies expander
+        print("[DIAG] Looking for a thread with replies...")
+        target_thread = None
+        for thread in page.query_selector_all("ytd-comment-thread-renderer"):
+            has_replies = thread.evaluate("""
+                el => {
+                    const btns = el.querySelectorAll('button, ytd-button-renderer, #expander-header');
+                    for (const b of btns) {
+                        if (b.textContent.toLowerCase().includes('repl')) return true;
+                    }
+                    return false;
+                }
+            """)
+            if has_replies:
+                target_thread = thread
+                break
+            page.evaluate("window.scrollBy(0, 400)")
+            time.sleep(0.3)
+
+        if not target_thread:
+            print("[DIAG] No thread with replies found — using first thread")
+            target_thread = page.query_selector("ytd-comment-thread-renderer")
 
         # Expand replies
         expanded = target_thread.evaluate("""
@@ -82,27 +80,47 @@ with sync_playwright() as p:
                 return null;
             }
         """)
-        print(f"[TEST-REPLY-ID] Expand button: '{expanded}'")
-        time.sleep(random.uniform(2.0, 3.0))
+        print(f"[DIAG] Expanded: '{expanded}'")
+        time.sleep(3.0)
 
-        # Count visible replies
         reply_count = len(target_thread.query_selector_all(
             "ytd-comment-replies-renderer ytd-comment-renderer, "
             "ytd-comment-replies-renderer ytd-comment-view-model"
         ))
-        print(f"[TEST-REPLY-ID] Replies visible: {reply_count}")
+        print(f"[DIAG] {reply_count} reply elements visible")
 
-        # Run the scraper
-        reply_id = _scrape_new_reply_id(page, target_thread)
-        print(f"[TEST-REPLY-ID] Scraped reply ID : {reply_id}")
-        print(f"[TEST-REPLY-ID] Parent comment ID: {PARENT_COMMENT_ID}")
+        # Dump every attribute + every href/link inside each reply element
+        dump = target_thread.evaluate("""
+            el => {
+                const out = [];
+                const replies = el.querySelectorAll(
+                    'ytd-comment-replies-renderer ytd-comment-renderer, ' +
+                    'ytd-comment-replies-renderer ytd-comment-view-model'
+                );
+                replies.forEach((r, i) => {
+                    const info = {index: i, tag: r.tagName, attrs: {}, links: [], childIds: []};
+                    for (const a of r.attributes) info.attrs[a.name] = a.value;
+                    r.querySelectorAll('a[href]').forEach(a => info.links.push(a.href));
+                    r.querySelectorAll('[id]').forEach(el2 => {
+                        if (el2.id) info.childIds.push({id: el2.id, tag: el2.tagName, attrs: Object.fromEntries(Array.from(el2.attributes).map(a=>[a.name,a.value]))});
+                    });
+                    out.push(info);
+                });
+                return out;
+            }
+        """)
+
         print()
+        print("=" * 60)
+        for entry in dump:
+            print(f"[REPLY {entry['index']}] <{entry['tag']}>")
+            print(f"  attrs     : {entry['attrs']}")
+            print(f"  links     : {entry['links'][:5]}")
+            for cid in entry['childIds']:
+                if any(k in cid['attrs'] for k in ('data-comment-id', 'id')) or 'comment' in cid['id'].lower():
+                    print(f"  child #{cid['id']} ({cid['tag']}): {cid['attrs']}")
+            print()
+        print("=" * 60)
 
-        if reply_id and reply_id != PARENT_COMMENT_ID:
-            print("[TEST-REPLY-ID] PASS — reply ID differs from parent ID")
-        elif reply_id == PARENT_COMMENT_ID:
-            print("[TEST-REPLY-ID] FAIL — still returning parent ID (bug not fixed)")
-        else:
-            print("[TEST-REPLY-ID] WARN — scraper returned empty string")
     finally:
         context.close()
