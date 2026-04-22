@@ -317,8 +317,11 @@ def _try_like_video(page):
             print("  [LIKE] Already liked — skipping")
             return
 
-        # Scroll into view
-        like_btn.scroll_into_view_if_needed()
+        # Scroll into view — short timeout, force=True on click makes it non-blocking anyway
+        try:
+            like_btn.scroll_into_view_if_needed(timeout=4000)
+        except Exception:
+            pass
         time.sleep(random.uniform(0.8, 1.5))
 
         # force=True bypasses viewport/actionability checks that headless often fails
@@ -580,36 +583,80 @@ def post_comment(video_id: str, comment_text: str, page=None, video_title: str =
 
         human_scroll(pg)
 
+        # In headless Docker, scroll aggressively to trigger YouTube's Intersection Observer
+        # which lazy-loads the comments section
+        pg.evaluate("""
+            () => {
+                const c = document.querySelector('ytd-comments') || document.querySelector('#comments');
+                if (c) c.scrollIntoView({behavior: 'instant', block: 'start'});
+                else window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.6));
+            }
+        """)
+        time.sleep(random.uniform(2.0, 3.0))
+        pg.evaluate("window.scrollBy(0, 300)")
+        time.sleep(random.uniform(1.0, 2.0))
+
         try:
             pg.wait_for_selector("#simplebox-placeholder", timeout=30000)
         except PlaywrightTimeoutError:
+            _debug_page_state(pg, "no_simplebox")
             raise Exception("Comment box not found — cookies may be expired")
 
-        # Scroll placeholder into view before clicking
-        placeholder = pg.query_selector("#simplebox-placeholder")
-        if placeholder:
-            placeholder.scroll_into_view_if_needed()
-            time.sleep(random.uniform(0.5, 1.0))
+        # Scroll placeholder to center of viewport
+        pg.evaluate("""
+            () => {
+                const el = document.querySelector('#simplebox-placeholder');
+                if (el) el.scrollIntoView({behavior: 'instant', block: 'center'});
+            }
+        """)
+        time.sleep(random.uniform(1.0, 1.5))
 
+        # Attempt 1: human bezier click
         human_click(pg, "#simplebox-placeholder")
-        time.sleep(random.uniform(0.8, 1.5))
+        time.sleep(random.uniform(1.5, 2.5))
 
-        # If the box didn't expand, try clicking again or use JS focus
+        # Attempt 2: Playwright direct click with force
         if not pg.query_selector("#contenteditable-root"):
-            time.sleep(random.uniform(0.5, 1.0))
             try:
-                pg.click("#simplebox-placeholder")
+                pg.click("#simplebox-placeholder", force=True)
             except Exception:
                 pass
-            time.sleep(random.uniform(0.5, 1.0))
+            time.sleep(random.uniform(1.0, 1.5))
 
+        # Attempt 3: Full MouseEvent dispatch — required for YouTube's custom elements
         if not pg.query_selector("#contenteditable-root"):
-            pg.evaluate("document.querySelector('#simplebox-placeholder')?.click()")
-            time.sleep(random.uniform(0.5, 1.0))
+            pg.evaluate("""
+                () => {
+                    const el = document.querySelector('#simplebox-placeholder');
+                    if (!el) return;
+                    const opts = {bubbles: true, cancelable: true, view: window};
+                    el.dispatchEvent(new MouseEvent('mouseover', opts));
+                    el.dispatchEvent(new MouseEvent('mouseenter', opts));
+                    el.dispatchEvent(new MouseEvent('mousedown', opts));
+                    el.dispatchEvent(new MouseEvent('mouseup', opts));
+                    el.dispatchEvent(new MouseEvent('click', opts));
+                }
+            """)
+            time.sleep(random.uniform(1.5, 2.5))
+
+        # Attempt 4: Click the parent renderer + try focusing any contenteditable inside it
+        if not pg.query_selector("#contenteditable-root"):
+            pg.evaluate("""
+                () => {
+                    const renderer = document.querySelector('ytd-comment-simplebox-renderer');
+                    if (!renderer) return;
+                    const opts = {bubbles: true, cancelable: true, view: window};
+                    renderer.dispatchEvent(new MouseEvent('click', opts));
+                    const inner = renderer.querySelector('[contenteditable], [id*="placeholder"]');
+                    if (inner) { inner.dispatchEvent(new MouseEvent('click', opts)); inner.focus(); }
+                }
+            """)
+            time.sleep(random.uniform(1.5, 2.5))
 
         try:
-            pg.wait_for_selector("#contenteditable-root", timeout=25000)
+            pg.wait_for_selector("#contenteditable-root", timeout=15000)
         except PlaywrightTimeoutError:
+            _debug_page_state(pg, "comment_box_fail")
             raise Exception("Comment input did not open — YouTube may have blocked the interaction")
 
         time.sleep(random.uniform(1.0, 2.5))
