@@ -568,6 +568,75 @@ def _scrape_new_comment_id(page) -> str:
         return ""
 
 
+def _scrape_new_reply_id(page, target_thread) -> str:
+    """Scrape the ID of the most recently posted reply inside a specific comment thread."""
+    try:
+        time.sleep(random.uniform(1.5, 2.5))
+
+        # Scroll replies section into view
+        try:
+            target_thread.evaluate("""
+                el => {
+                    const replies = el.querySelector('ytd-comment-replies-renderer');
+                    if (replies) replies.scrollIntoView({behavior: 'instant', block: 'nearest'});
+                }
+            """)
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.5, 1.0))
+
+        # Try extracting reply ID from the last reply renderer inside the thread
+        reply_id = target_thread.evaluate("""
+            el => {
+                const replies = el.querySelectorAll(
+                    'ytd-comment-replies-renderer ytd-comment-renderer, ' +
+                    'ytd-comment-replies-renderer ytd-comment-view-model'
+                );
+                if (!replies.length) return null;
+                const last = replies[replies.length - 1];
+                // Try data-comment-id
+                const idAttr = last.getAttribute('data-comment-id');
+                if (idAttr) return idAttr;
+                // Try lc= anchor
+                const link = last.querySelector('a[href*="lc="]');
+                if (link) {
+                    const match = link.href.match(/lc=([^&]+)/);
+                    if (match) return match[1];
+                }
+                // Try reply-id inside #comment element
+                const comment = last.querySelector('#comment');
+                if (comment) {
+                    const cid = comment.getAttribute('data-comment-id');
+                    if (cid) return cid;
+                }
+                return null;
+            }
+        """)
+
+        if reply_id:
+            print(f"  [REPLY ID] Scraped: {reply_id}")
+            return reply_id
+
+        # Fallback: page-level lc= links restricted to reply elements
+        reply_id = page.evaluate("""
+            () => {
+                const links = document.querySelectorAll(
+                    'ytd-comment-replies-renderer a[href*="lc="]'
+                );
+                if (!links.length) return null;
+                const last = links[links.length - 1];
+                const match = last.href.match(/lc=([^&]+)/);
+                return match ? match[1] : null;
+            }
+        """)
+        if reply_id:
+            print(f"  [REPLY ID] Scraped (fallback): {reply_id}")
+        return reply_id or ""
+    except Exception as e:
+        print(f"  [REPLY ID] Could not scrape: {e}")
+        return ""
+
+
 def post_comment(video_id: str, comment_text: str, page=None, video_title: str = "") -> str:
     if DRY_RUN:
         print(f"[DRY RUN] Would post comment on {video_id}:")
@@ -943,7 +1012,7 @@ def post_reply(video_id: str, parent_comment_id: str, reply_text: str, comment_t
                     raise Exception("Submit button not found")
                 human_click_element(page, submit_btn)
                 time.sleep(random.uniform(3.0, 5.0))
-                return _scrape_new_comment_id(page) or f"reply_{parent_comment_id}_{int(time.time())}"
+                return _scrape_new_reply_id(page, top_thread) or f"reply_{parent_comment_id}_{int(time.time())}"
 
             # ── Default flow (account 2 replying to account 1's top-level comment) ──
             # Navigate directly to the video with the target comment highlighted
@@ -1046,7 +1115,7 @@ def post_reply(video_id: str, parent_comment_id: str, reply_text: str, comment_t
             human_click_element(page, submit_btn)
             time.sleep(random.uniform(3.0, 5.0))
 
-            return _scrape_new_comment_id(page) or f"reply_{parent_comment_id}_{int(time.time())}"
+            return _scrape_new_reply_id(page, target_thread) or f"reply_{parent_comment_id}_{int(time.time())}"
         finally:
             context.close()
 
