@@ -40,8 +40,12 @@ def _read(path: str) -> list:
 
 
 def _write(path: str, data: list):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"  [COORD] Written {len(data)} records to {path}")
+    except Exception as e:
+        print(f"  [COORD] ERROR writing {path}: {e}")
 
 
 class _Lock:
