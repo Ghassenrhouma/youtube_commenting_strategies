@@ -4,10 +4,11 @@ import time
 from datetime import datetime, timedelta
 from filelock import FileLock
 
-S1_FILE = "targets_s1.json"
-S2_FILE = "targets_s2.json"
-S3_FILE = "targets_s3.json"
-PAIRS_FILE = "used_pairs_s3.json"
+_DIR = os.path.dirname(os.path.abspath(__file__))  # noqa
+S1_FILE = os.path.join(_DIR, "targets_s1.json")
+S2_FILE = os.path.join(_DIR, "targets_s2.json")
+S3_FILE = os.path.join(_DIR, "targets_s3.json")
+PAIRS_FILE = os.path.join(_DIR, "used_pairs_s3.json")
 
 TOPIC_PAIRS_S3 = [
     "air freight vs sea freight",
@@ -43,10 +44,36 @@ def _write(path: str, data: list):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+class _Lock:
+    """FileLock wrapper that falls back to a no-op on CIFS/Windows mounts where locking fails."""
+    def __init__(self, path: str):
+        self._path = path
+        self._lock = None
+        try:
+            self._lock = FileLock(path, timeout=10)
+        except Exception:
+            pass
+
+    def __enter__(self):
+        if self._lock:
+            try:
+                self._lock.acquire()
+            except Exception:
+                self._lock = None
+        return self
+
+    def __exit__(self, *args):
+        if self._lock:
+            try:
+                self._lock.release()
+            except Exception:
+                pass
+
+
 # ── Strategy 1 ────────────────────────────────────────────────────────────────
 
 def s1_add_target(video_id: str, video_title: str):
-    lock = FileLock(S1_FILE + ".lock")
+    lock = _Lock(S1_FILE + ".lock")
     with lock:
         data = _read(S1_FILE)
         if not any(t["video_id"] == video_id for t in data):
@@ -67,7 +94,7 @@ def s1_add_target(video_id: str, video_title: str):
 
 
 def s1_get_pending() -> dict | None:
-    lock = FileLock(S1_FILE + ".lock")
+    lock = _Lock(S1_FILE + ".lock")
     with lock:
         for t in _read(S1_FILE):
             if t["status"] == "pending":
@@ -76,7 +103,7 @@ def s1_get_pending() -> dict | None:
 
 
 def s1_get_a_done_ready(skip_delays: bool = False) -> dict | None:
-    lock = FileLock(S1_FILE + ".lock")
+    lock = _Lock(S1_FILE + ".lock")
     with lock:
         now = datetime.utcnow()
         for t in _read(S1_FILE):
@@ -97,7 +124,7 @@ def s1_get_a_done_ready(skip_delays: bool = False) -> dict | None:
 
 
 def s1_get_b_done_ready(skip_delays: bool = False) -> dict | None:
-    lock = FileLock(S1_FILE + ".lock")
+    lock = _Lock(S1_FILE + ".lock")
     with lock:
         now = datetime.utcnow()
         for t in _read(S1_FILE):
@@ -118,7 +145,7 @@ def s1_get_b_done_ready(skip_delays: bool = False) -> dict | None:
 
 
 def s1_update(video_id: str, **kwargs):
-    lock = FileLock(S1_FILE + ".lock")
+    lock = _Lock(S1_FILE + ".lock")
     with lock:
         data = _read(S1_FILE)
         for t in data:
@@ -129,7 +156,7 @@ def s1_update(video_id: str, **kwargs):
 
 
 def s1_get_all_ids() -> set:
-    lock = FileLock(S1_FILE + ".lock")
+    lock = _Lock(S1_FILE + ".lock")
     with lock:
         return {t["video_id"] for t in _read(S1_FILE)}
 
@@ -137,7 +164,7 @@ def s1_get_all_ids() -> set:
 # ── Strategy 2 ────────────────────────────────────────────────────────────────
 
 def s2_add_target(video_id: str, video_title: str):
-    lock = FileLock(S2_FILE + ".lock")
+    lock = _Lock(S2_FILE + ".lock")
     with lock:
         data = _read(S2_FILE)
         if not any(t["video_id"] == video_id for t in data):
@@ -154,7 +181,7 @@ def s2_add_target(video_id: str, video_title: str):
 
 
 def s2_get_pending() -> dict | None:
-    lock = FileLock(S2_FILE + ".lock")
+    lock = _Lock(S2_FILE + ".lock")
     with lock:
         for t in _read(S2_FILE):
             if t["status"] == "pending":
@@ -163,7 +190,7 @@ def s2_get_pending() -> dict | None:
 
 
 def s2_get_ready_for_reply(skip_delays: bool = False) -> dict | None:
-    lock = FileLock(S2_FILE + ".lock")
+    lock = _Lock(S2_FILE + ".lock")
     with lock:
         now = datetime.utcnow()
         for t in _read(S2_FILE):
@@ -184,7 +211,7 @@ def s2_get_ready_for_reply(skip_delays: bool = False) -> dict | None:
 
 
 def s2_update(video_id: str, **kwargs):
-    lock = FileLock(S2_FILE + ".lock")
+    lock = _Lock(S2_FILE + ".lock")
     with lock:
         data = _read(S2_FILE)
         for t in data:
@@ -195,7 +222,7 @@ def s2_update(video_id: str, **kwargs):
 
 
 def s2_get_all_ids() -> set:
-    lock = FileLock(S2_FILE + ".lock")
+    lock = _Lock(S2_FILE + ".lock")
     with lock:
         return {t["video_id"] for t in _read(S2_FILE)}
 
@@ -203,7 +230,7 @@ def s2_get_all_ids() -> set:
 # ── Strategy 3 ────────────────────────────────────────────────────────────────
 
 def s3_get_available_topic_pair() -> str | None:
-    lock = FileLock(PAIRS_FILE + ".lock")
+    lock = _Lock(PAIRS_FILE + ".lock")
     with lock:
         used = _read(PAIRS_FILE)
         now = datetime.utcnow()
@@ -221,7 +248,7 @@ def s3_get_available_topic_pair() -> str | None:
 
 
 def s3_mark_pair_used(topic_pair: str):
-    lock = FileLock(PAIRS_FILE + ".lock")
+    lock = _Lock(PAIRS_FILE + ".lock")
     with lock:
         used = _read(PAIRS_FILE)
         used.append({"topic_pair": topic_pair, "used_at": datetime.utcnow().isoformat()})
@@ -229,7 +256,7 @@ def s3_mark_pair_used(topic_pair: str):
 
 
 def s3_add_target(video_id: str, video_title: str, topic_pair: str):
-    lock = FileLock(S3_FILE + ".lock")
+    lock = _Lock(S3_FILE + ".lock")
     with lock:
         data = _read(S3_FILE)
         if not any(t["video_id"] == video_id for t in data):
@@ -247,7 +274,7 @@ def s3_add_target(video_id: str, video_title: str, topic_pair: str):
 
 
 def s3_get_pending() -> dict | None:
-    lock = FileLock(S3_FILE + ".lock")
+    lock = _Lock(S3_FILE + ".lock")
     with lock:
         for t in _read(S3_FILE):
             if t["status"] == "pending":
@@ -256,7 +283,7 @@ def s3_get_pending() -> dict | None:
 
 
 def s3_get_a_done_ready(skip_delays: bool = False) -> dict | None:
-    lock = FileLock(S3_FILE + ".lock")
+    lock = _Lock(S3_FILE + ".lock")
     with lock:
         now = datetime.utcnow()
         for t in _read(S3_FILE):
@@ -277,7 +304,7 @@ def s3_get_a_done_ready(skip_delays: bool = False) -> dict | None:
 
 
 def s3_update(video_id: str, **kwargs):
-    lock = FileLock(S3_FILE + ".lock")
+    lock = _Lock(S3_FILE + ".lock")
     with lock:
         data = _read(S3_FILE)
         for t in data:
@@ -288,6 +315,6 @@ def s3_update(video_id: str, **kwargs):
 
 
 def s3_get_all_ids() -> set:
-    lock = FileLock(S3_FILE + ".lock")
+    lock = _Lock(S3_FILE + ".lock")
     with lock:
         return {t["video_id"] for t in _read(S3_FILE)}
