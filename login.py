@@ -6,9 +6,10 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 
 def login():
-    account = input("Which account? (1 or 2): ").strip()
-    if account not in ("1", "2"):
-        print("Invalid choice. Enter 1 or 2.")
+    print("Available accounts: 1 – 10")
+    account = input("Which account? (1-10): ").strip()
+    if not account.isdigit() or not (1 <= int(account) <= 10):
+        print("Invalid choice. Enter a number between 1 and 10.")
         return
 
     profile_path = f"profiles/account{account}"

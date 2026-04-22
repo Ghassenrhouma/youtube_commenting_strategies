@@ -20,13 +20,18 @@ from coordination import (
     s2_add_target, s2_get_pending, s2_update, s2_get_all_ids,
 )
 from tracker import log_action
-from video_finder import get_videos_by_keyword, SEARCH_QUERIES
+from video_finder import get_videos_by_keyword, get_channel_recent_videos, SEARCH_QUERIES, TARGET_CHANNELS
 
 
 def _find_new_videos(seen_ids: set, max_results: int = 3) -> list:
-    query = random.choice(SEARCH_QUERIES)
-    print(f"[S2-A1] Searching: '{query}'")
-    videos = get_videos_by_keyword(query, max_results=12)
+    if random.random() < 0.5:
+        channel = random.choice(TARGET_CHANNELS)
+        print(f"[S2-A1] Channel browse: '{channel['name']}'")
+        videos = get_channel_recent_videos(channel["url"], channel["name"], max_results=12)
+    else:
+        query = random.choice(SEARCH_QUERIES)
+        print(f"[S2-A1] Searching: '{query}'")
+        videos = get_videos_by_keyword(query, max_results=12)
     return [v for v in videos if v["video_id"] not in seen_ids][:max_results]
 
 

@@ -8,8 +8,20 @@ load_dotenv()
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 SERVICE_ACCOUNT_PATH = os.getenv("SERVICE_ACCOUNT_PATH", "service_account.json")
 
-# Sheet columns: timestamp | strategy | account | video_id | video_title |
-#                role | replied_to_comment | text | comment_id | status | flagged
+# Sheet columns: timestamp | strategy | account | video_id | video_link | role | comment_id
+
+_STRATEGY_LABELS = {
+    "s1": "Thread Building",
+    "s2": "Depth Escalation",
+    "s3": "Staged Disagreement",
+    "s4": "Replayable Comment",
+}
+
+_ACCOUNT_LABELS = {
+    "account1": "Seif Masmoudi",
+    "account2": "Amir Driri",
+    "account3": "Clement Bonnefoi",
+}
 
 
 def get_seen_video_ids(account: str = None) -> set:
@@ -20,7 +32,7 @@ def get_seen_video_ids(account: str = None) -> set:
         result = set()
         for row in rows[1:]:
             if len(row) > 3 and row[3]:
-                if account is None or (len(row) > 2 and row[2] == account):
+                if account is None or (len(row) > 2 and row[2] == _ACCOUNT_LABELS.get(account, account)):
                     result.add(row[3])
         print(f"[TRACKER] Loaded {len(result)} seen video IDs")
         return result
@@ -43,25 +55,23 @@ def log_action(
     dry_run: bool = False,
 ):
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    strategy_label = _STRATEGY_LABELS.get(strategy, strategy)
+    account_label = _ACCOUNT_LABELS.get(account, account)
+    video_link = f"https://www.youtube.com/watch?v={video_id}"
 
     if dry_run:
         print("[DRY RUN] Would log row:")
-        print(f"  timestamp          : {timestamp}")
-        print(f"  strategy           : {strategy}")
-        print(f"  account            : {account}")
-        print(f"  video_id           : {video_id}")
-        print(f"  video_title        : {video_title}")
-        print(f"  role               : {role}")
-        print(f"  replied_to_comment : {replied_to_comment[:80] if replied_to_comment else '(none)'}")
-        print(f"  text               : {text[:100]}")
-        print(f"  comment_id         : {comment_id}")
-        print(f"  status             : {status}")
-        print(f"  flagged            : {flagged}")
+        print(f"  timestamp  : {timestamp}")
+        print(f"  strategy   : {strategy_label}")
+        print(f"  account    : {account_label}")
+        print(f"  video_id   : {video_id}")
+        print(f"  video_link : {video_link}")
+        print(f"  role       : {role}")
+        print(f"  comment_id : {comment_id}")
         return
 
     client = gspread.service_account(filename=SERVICE_ACCOUNT_PATH)
     sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
     sheet.append_row([
-        timestamp, strategy, account, video_id, video_title,
-        role, replied_to_comment, text, comment_id, status, flagged,
+        timestamp, strategy_label, account_label, video_id, video_link, role, comment_id,
     ])

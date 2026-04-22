@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import difflib
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -10,10 +11,13 @@ from browser_helper import (
     human_click, human_click_element, human_scroll, human_type,
 )
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+_watch_max_debug = os.getenv("WATCH_MAX", "NOT SET")
+print(f"[CONFIG] WATCH_MAX={_watch_max_debug}")
 
 
-def _wait_for_load(page, timeout=10000):
+def _wait_for_load(page, timeout=20000):
     """Wait for networkidle with a hard timeout — YouTube never fully idles."""
     try:
         page.wait_for_load_state("networkidle", timeout=timeout)
@@ -95,11 +99,42 @@ def _search_and_click_video(page, video_id, video_title=""):
         _wait_for_load(page)
 
 
+def _dismiss_consent_banner(page):
+    """Dismiss YouTube's GDPR consent popup if present (common in Docker/fresh profiles)."""
+    try:
+        for selector in [
+            "ytd-consent-bump-v2-lightbox button[aria-label*='Accept']",
+            "ytd-consent-bump-v2-lightbox button[aria-label*='Agree']",
+            "ytd-consent-bump-v2-lightbox .eom-buttons button:first-child",
+            "button[aria-label='Accept all']",
+            "button[aria-label='Agree to all']",
+        ]:
+            btn = page.query_selector(selector)
+            if btn:
+                btn.click()
+                print("  [CONSENT] Dismissed consent banner")
+                time.sleep(random.uniform(1.0, 2.0))
+                return
+        dismissed = page.evaluate("""() => {
+            const lb = document.querySelector('ytd-consent-bump-v2-lightbox');
+            if (!lb) return false;
+            const btn = lb.querySelector('button');
+            if (btn) { btn.click(); return true; }
+            return false;
+        }""")
+        if dismissed:
+            print("  [CONSENT] Dismissed consent banner via JS")
+            time.sleep(random.uniform(1.0, 2.0))
+    except Exception:
+        pass
+
+
 def _navigate_to_video(page, video_id, video_title=""):
     """Simulates a human arriving at a video naturally."""
     page.goto("https://www.youtube.com")
     _wait_for_load(page)
     time.sleep(random.uniform(3, 8))
+    _dismiss_consent_banner(page)
 
     page.evaluate(f"window.scrollBy(0, {random.randint(200, 500)})")
     time.sleep(random.uniform(2, 5))
@@ -150,7 +185,7 @@ def _handle_ads(page):
 def _ensure_video_playing(page):
     """Wait for the player to load and handle any pre-roll ads. Let YouTube autoplay."""
     try:
-        page.wait_for_selector(".html5-video-player", timeout=8000)
+        page.wait_for_selector(".html5-video-player", timeout=20000)
         time.sleep(random.uniform(1.5, 2.5))
         _handle_ads(page)
     except Exception:
@@ -235,6 +270,27 @@ def _watch_with_ad_checks(page, watch_time: float):
     time.sleep(watch_time)
 
 
+def _debug_page_state(page, label="debug"):
+    """Dump page URL, key element presence, screenshot and HTML to /app/code/debug/ for post-mortem."""
+    try:
+        import os
+        out_dir = "/app/code/debug"
+        os.makedirs(out_dir, exist_ok=True)
+        url = page.url
+        sign_in = bool(page.query_selector("a[href*='accounts.google.com'], ytd-button-renderer[id*='sign']"))
+        consent = bool(page.query_selector("ytd-consent-bump-v2-lightbox"))
+        textarea = bool(page.query_selector("#contenteditable-root"))
+        reply_btn_present = bool(page.query_selector("#reply-button-end"))
+        print(f"  [DEBUG:{label}] url={url[:80]}")
+        print(f"  [DEBUG:{label}] sign_in_prompt={sign_in} consent={consent} textarea={textarea} reply_btn={reply_btn_present}")
+        page.screenshot(path=f"{out_dir}/{label}.png", full_page=False)
+        with open(f"{out_dir}/{label}.html", "w", encoding="utf-8") as f:
+            f.write(page.content())
+        print(f"  [DEBUG:{label}] saved -> {out_dir}/{label}.png + .html")
+    except Exception as e:
+        print(f"  [DEBUG:{label}] failed to capture state: {e}")
+
+
 def _try_like_video(page):
     """Like the video if not already liked. Tries multiple selectors."""
     try:
@@ -262,18 +318,13 @@ def _try_like_video(page):
             return
 
         # Scroll into view
-        page.evaluate("el => el.scrollIntoView({behavior: 'smooth', block: 'center'})",
-                      like_btn)
-        time.sleep(random.uniform(0.6, 1.2))
+        like_btn.scroll_into_view_if_needed()
+        time.sleep(random.uniform(0.8, 1.5))
 
-        # Check bounding box — fallback to JS click if off-screen
-        bbox = like_btn.bounding_box()
-        if bbox:
-            human_click_element(page, like_btn)
-        else:
-            page.evaluate("el => el.click()", like_btn)
+        # force=True bypasses viewport/actionability checks that headless often fails
+        like_btn.click(force=True)
 
-        time.sleep(random.uniform(1.0, 2.0))
+        time.sleep(random.uniform(1.5, 2.5))
         aria_after = like_btn.get_attribute("aria-pressed")
         if aria_after == "true":
             print("  [LIKE] ✓ Liked")
@@ -285,18 +336,28 @@ def _try_like_video(page):
 
 def _get_video_duration(page) -> int:
     """Read video duration from the YouTube player. Returns seconds, or 600 as fallback."""
+    # Try JS video.duration first — works in headless where DOM text may show 0:00 initially
+    for attempt in range(8):
+        try:
+            dur = page.evaluate("() => { const v = document.querySelector('video'); return v ? v.duration : 0; }")
+            if dur and dur > 0 and not (dur != dur):  # exclude 0, None, NaN
+                return int(dur)
+        except Exception:
+            pass
+        time.sleep(1)
+    # Fallback: parse the DOM text element
     try:
         duration_el = page.query_selector(".ytp-time-duration")
         if duration_el:
             text = (duration_el.inner_text() or "").strip()  # e.g. "12:34" or "1:02:34"
             parts = text.split(":")
-            if len(parts) == 2:
+            if len(parts) == 2 and int(parts[0]) + int(parts[1]) > 0:
                 return int(parts[0]) * 60 + int(parts[1])
             elif len(parts) == 3:
                 return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
     except Exception:
         pass
-    return 600  # safe fallback if element not found
+    return 600  # safe fallback
 
 
 def _cap_watch_time(desired: float, duration: int) -> float:
@@ -305,8 +366,8 @@ def _cap_watch_time(desired: float, duration: int) -> float:
     max_watch = max(60, int(duration * 0.85))
     result = min(desired, max_watch)
     watch_max_env = int(os.getenv("WATCH_MAX", "0"))
-    if watch_max_env and result > watch_max_env:
-        result = random.uniform(max(30, watch_max_env * 0.5), watch_max_env)
+    if watch_max_env:
+        result = min(result, watch_max_env)
     return result
 
 
@@ -315,7 +376,7 @@ def _variable_video_behavior(page):
     _ensure_video_playing(page)
     duration = _get_video_duration(page)
 
-    behavior = random.choices(
+    behavior = os.getenv("WATCH_BEHAVIOR") or random.choices(
         ["quick_commenter", "normal_watcher", "engaged_watcher", "skeptical_browser"],
         weights=[20, 40, 25, 15],
     )[0]
@@ -431,7 +492,8 @@ def passive_browse_session(page=None):
             _wait_for_load(pg)
 
             _ensure_video_playing(pg)
-            watch_time = random.uniform(30, 90)
+            _watch_max = int(os.getenv("WATCH_MAX", "0"))
+            watch_time = min(random.uniform(30, 90), _watch_max) if _watch_max else random.uniform(30, 90)
             print(f"  [HUMAN] Passively watching random video for {int(watch_time)}s")
             _watch_with_ad_checks(pg, watch_time)
 
@@ -519,7 +581,7 @@ def post_comment(video_id: str, comment_text: str, page=None, video_title: str =
         human_scroll(pg)
 
         try:
-            pg.wait_for_selector("#simplebox-placeholder", timeout=15000)
+            pg.wait_for_selector("#simplebox-placeholder", timeout=30000)
         except PlaywrightTimeoutError:
             raise Exception("Comment box not found — cookies may be expired")
 
@@ -546,7 +608,7 @@ def post_comment(video_id: str, comment_text: str, page=None, video_title: str =
             time.sleep(random.uniform(0.5, 1.0))
 
         try:
-            pg.wait_for_selector("#contenteditable-root", timeout=10000)
+            pg.wait_for_selector("#contenteditable-root", timeout=25000)
         except PlaywrightTimeoutError:
             raise Exception("Comment input did not open — YouTube may have blocked the interaction")
 
@@ -576,7 +638,79 @@ def post_comment(video_id: str, comment_text: str, page=None, video_title: str =
             context.close()
 
 
-def post_reply(video_id: str, parent_comment_id: str, reply_text: str, comment_text: str = "") -> str:
+def _sort_comments_newest(page):
+    """Switch the YouTube comment sort order to 'Newest first'."""
+    try:
+        # Scroll the comments section into view
+        page.evaluate("""
+            () => {
+                const el = document.querySelector('ytd-comments') ||
+                           document.querySelector('#comments');
+                if (el) el.scrollIntoView({behavior: 'instant', block: 'start'});
+            }
+        """)
+        time.sleep(random.uniform(1.0, 1.8))
+
+        # Find and click the sort dropdown button
+        sort_btn = None
+        for sel in [
+            "ytd-comments ytd-sort-filter-sub-menu #label",
+            "ytd-sort-filter-sub-menu yt-sort-filter-sub-menu-renderer #label",
+            "#sort-menu yt-sort-filter-sub-menu-renderer #label",
+            "ytd-comments #sort-menu #label",
+        ]:
+            sort_btn = page.query_selector(sel)
+            if sort_btn:
+                break
+
+        if not sort_btn:
+            print("  [REPLY] Could not find sort button — continuing with default order")
+            return
+
+        sort_btn.scroll_into_view_if_needed()
+        time.sleep(random.uniform(0.4, 0.8))
+        sort_btn.evaluate("el => el.click()")
+        # Wait for dropdown to animate open
+        time.sleep(random.uniform(1.5, 2.5))
+
+        # Use JS to find any clickable element containing "newest" or French equivalent
+        clicked = page.evaluate("""
+            () => {
+                const candidates = document.querySelectorAll(
+                    'ytd-menu-service-item-renderer, tp-yt-paper-item, yt-list-item-view-model'
+                );
+                for (const el of candidates) {
+                    const t = el.textContent.toLowerCase();
+                    if (el.offsetParent !== null && (
+                        t.includes('newest') || t.includes('r\u00e9cent') || t.includes('recent')
+                    )) {
+                        el.click();
+                        return el.textContent.trim();
+                    }
+                }
+                return null;
+            }
+        """)
+        if clicked:
+            time.sleep(random.uniform(1.5, 2.5))
+            page.wait_for_selector("ytd-comment-thread-renderer", timeout=25000)
+            print(f"  [REPLY] Sorted by: '{clicked[:40]}'")
+        else:
+            # Debug: print what options are actually in the dropdown
+            found = page.evaluate("""
+                () => {
+                    const els = document.querySelectorAll(
+                        'ytd-menu-service-item-renderer, tp-yt-paper-item, yt-list-item-view-model'
+                    );
+                    return Array.from(els).map(e => e.textContent.trim()).filter(t => t.length > 0);
+                }
+            """)
+            print(f"  [REPLY] Sort option not found. Dropdown items: {found}")
+    except Exception as e:
+        print(f"  [REPLY] Sort switch failed ({e}) — continuing with default order")
+
+
+def post_reply(video_id: str, parent_comment_id: str, reply_text: str, comment_text: str = "", top_level_comment_text: str = "") -> str:
     if DRY_RUN:
         print(f"[DRY RUN] Would reply to comment on {video_id}:")
         print(f"  '{reply_text}'")
@@ -587,32 +721,253 @@ def post_reply(video_id: str, parent_comment_id: str, reply_text: str, comment_t
         try:
             page = context.new_page()
             patch_page(page)
-            _navigate_to_video(page, video_id)
+
+            # ── Account 3 flow: find top-level comment → expand replies → find reply ──
+            if top_level_comment_text:
+                page.goto(f"https://www.youtube.com/watch?v={video_id}")
+                _wait_for_load(page)
+                _dismiss_consent_banner(page)
+                _variable_video_behavior(page)
+
+                # Guard against autoplay navigating away
+                if f"watch?v={video_id}" not in page.url:
+                    page.goto(f"https://www.youtube.com/watch?v={video_id}")
+                    _wait_for_load(page)
+                    _dismiss_consent_banner(page)
+                # Scroll just enough to bring ytd-comments into view for the sort button
+                for _ in range(15):
+                    if page.query_selector("ytd-comments ytd-sort-filter-sub-menu, ytd-sort-filter-sub-menu"):
+                        break
+                    page.evaluate("window.scrollBy(0, 600)")
+                    time.sleep(random.uniform(0.5, 1.0))
+
+                # Switch filter FIRST — on some videos comments only load after this
+                _sort_comments_newest(page)
+                time.sleep(random.uniform(1.5, 2.5))
+
+                # Now scroll to load comment threads
+                for i in range(30):
+                    count = len(page.query_selector_all("ytd-comment-thread-renderer"))
+                    if count > 0:
+                        print(f"  [DEBUG] Comments loaded: {count} threads after {i} scrolls")
+                        break
+                    page.evaluate("window.scrollBy(0, 800)")
+                    time.sleep(random.uniform(0.8, 1.5))
+
+                if not page.query_selector("ytd-comment-thread-renderer"):
+                    raise Exception("Comments section never loaded — aborting")
+                time.sleep(random.uniform(1.0, 2.0))
+
+                # Find top-level thread by similarity
+                norm_top = " ".join(top_level_comment_text[:120].lower().split())
+                top_thread = None
+                best_ratio = 0.0
+                best_thread = None
+                for scroll_attempt in range(30):
+                    for thread in page.query_selector_all("ytd-comment-thread-renderer"):
+                        text_el = thread.query_selector("#content-text, yt-formatted-string#content-text")
+                        t = " ".join((text_el.inner_text() or "").lower().split()) if text_el else ""
+                        ratio = difflib.SequenceMatcher(None, norm_top, t[:len(norm_top)+40]).ratio()
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_thread = thread
+                        if ratio >= 0.70:
+                            top_thread = thread
+                            print(f"  [REPLY] Found top-level comment ({ratio:.2f})")
+                            break
+                    if top_thread:
+                        break
+                    page.evaluate("window.scrollBy(0, 800)")
+                    time.sleep(random.uniform(1.0, 2.0))
+                if not top_thread and best_thread and best_ratio >= 0.40:
+                    print(f"  [REPLY] Using best top-level match ({best_ratio:.2f})")
+                    top_thread = best_thread
+                if not top_thread:
+                    raise Exception("Top-level comment not found — aborting")
+
+                # Expand replies by clicking the "X replies" button
+                top_thread.scroll_into_view_if_needed()
+                time.sleep(random.uniform(0.8, 1.2))
+
+                # Use JS to find and click the replies expander within this thread
+                expanded = top_thread.evaluate("""
+                    el => {
+                        const btns = el.querySelectorAll('button, ytd-button-renderer, #expander-header');
+                        for (const b of btns) {
+                            const t = b.textContent.toLowerCase();
+                            if (t.includes('repl') || t.includes('r\u00e9ponse')) {
+                                b.click();
+                                return b.textContent.trim();
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if expanded:
+                    print(f"  [REPLY] Clicked expand button: '{expanded[:60]}'")
+                else:
+                    print("  [REPLY] No expand button found — replies may already be visible")
+                time.sleep(random.uniform(2.0, 3.0))
+
+                # Wait for replies to appear in the page
+                try:
+                    page.wait_for_selector(
+                        "ytd-comment-replies-renderer ytd-comment-renderer, "
+                        "ytd-comment-replies-renderer ytd-comment-view-model",
+                        timeout=8000
+                    )
+                except Exception:
+                    pass
+                time.sleep(random.uniform(0.5, 1.0))
+
+                # Find account2's reply by similarity — query at page level inside thread
+                norm_reply = " ".join(comment_text[:120].lower().split()) if comment_text else ""
+                target_reply = None
+                best_reply_ratio = 0.0
+                best_reply_el = None
+
+                for attempt in range(8):
+                    # Try both old and new YouTube reply element names
+                    reply_renderers = top_thread.query_selector_all(
+                        "ytd-comment-replies-renderer ytd-comment-renderer, "
+                        "ytd-comment-replies-renderer ytd-comment-view-model"
+                    )
+                    print(f"  [REPLY] {len(reply_renderers)} replies visible (attempt {attempt})")
+                    for rr in reply_renderers:
+                        text_el = rr.query_selector(
+                            "#content-text, yt-formatted-string#content-text, "
+                            "#body #main #content #content-text"
+                        )
+                        rr_text = " ".join((text_el.inner_text() or "").lower().split()) if text_el else ""
+                        if not rr_text:
+                            # fallback: grab all text from the renderer
+                            rr_text = " ".join((rr.inner_text() or "").lower().split())[:200]
+                        ratio = difflib.SequenceMatcher(None, norm_reply, rr_text[:len(norm_reply)+40]).ratio()
+                        if ratio > best_reply_ratio:
+                            best_reply_ratio = ratio
+                            best_reply_el = rr
+                            print(f"  [REPLY] Best so far ({ratio:.2f}): '{rr_text[:60]}'")
+                        if ratio >= 0.55:
+                            target_reply = rr
+                            print(f"  [REPLY] Matched reply ({ratio:.2f})")
+                            break
+                    if target_reply:
+                        break
+                    more_btn = top_thread.query_selector(
+                        "ytd-comment-replies-renderer #more-replies button, "
+                        "ytd-comment-replies-renderer ytd-button-renderer button"
+                    )
+                    if more_btn:
+                        more_btn.evaluate("el => el.click()")
+                        time.sleep(random.uniform(1.5, 2.5))
+                    else:
+                        time.sleep(random.uniform(0.8, 1.2))
+
+                if not target_reply and best_reply_el and best_reply_ratio >= 0.35:
+                    print(f"  [REPLY] Using best reply match ({best_reply_ratio:.2f})")
+                    target_reply = best_reply_el
+                if not target_reply:
+                    raise Exception("Target reply not found in thread — aborting")
+
+                target_reply.scroll_into_view_if_needed()
+                time.sleep(random.uniform(0.5, 1.0))
+                reply_btn = target_reply.query_selector("#reply-button-end")
+                if not reply_btn:
+                    raise Exception("Reply button not found on target reply")
+                human_click_element(page, reply_btn)
+                time.sleep(random.uniform(1.0, 2.0))
+
+                input_el = top_thread.query_selector("ytd-comment-replies-renderer #contenteditable-root")
+                if not input_el:
+                    page.wait_for_selector("#contenteditable-root", timeout=20000)
+                    input_el = page.query_selector("#contenteditable-root")
+                human_click_element(page, input_el)
+                time.sleep(random.uniform(0.5, 1.0))
+                _type_reply(page, reply_text)
+                time.sleep(random.uniform(1.5, 3.0))
+
+                submit_btn = top_thread.query_selector("ytd-comment-replies-renderer #submit-button")
+                if not submit_btn:
+                    submit_btn = page.query_selector("#submit-button")
+                if not submit_btn:
+                    raise Exception("Submit button not found")
+                human_click_element(page, submit_btn)
+                time.sleep(random.uniform(3.0, 5.0))
+                return _scrape_new_comment_id(page) or f"reply_{parent_comment_id}_{int(time.time())}"
+
+            # ── Default flow (account 2 replying to account 1's top-level comment) ──
+            # Navigate directly to the video with the target comment highlighted
+            page.goto(f"https://www.youtube.com/watch?v={video_id}&lc={parent_comment_id}")
+            _wait_for_load(page)
+            _dismiss_consent_banner(page)
             _variable_video_behavior(page)
             human_scroll(page)
 
-            page.wait_for_selector("ytd-comment-thread-renderer", timeout=15000)
+            # Scroll progressively to trigger comment lazy-loading
+            for _ in range(15):
+                if page.query_selector("ytd-sort-filter-sub-menu, ytd-comment-thread-renderer"):
+                    break
+                page.evaluate("window.scrollBy(0, 600)")
+                time.sleep(random.uniform(0.5, 1.0))
+
+            _sort_comments_newest(page)
+            time.sleep(random.uniform(1.0, 2.0))
+
+            for _ in range(20):
+                if page.query_selector("ytd-comment-thread-renderer"):
+                    break
+                page.evaluate("window.scrollBy(0, 800)")
+                time.sleep(random.uniform(0.8, 1.5))
+
+            time.sleep(random.uniform(0.5, 1.5))
 
             target_thread = None
-            comment_snippet = comment_text[:60].strip() if comment_text else ""
-            print(f"  [REPLY] Looking for comment: '{comment_snippet[:80]}'")
 
-            for scroll_attempt in range(12):
-                threads = page.query_selector_all("ytd-comment-thread-renderer")
-                for thread in threads:
-                    text_el = thread.query_selector("#content-text")
-                    thread_text = (text_el.inner_text() or "").strip() if text_el else ""
-                    if comment_snippet and comment_snippet in thread_text:
-                        print(f"  [REPLY] Matched on scroll attempt {scroll_attempt}: '{thread_text[:80]}'")
-                        target_thread = thread
-                        break
-                if target_thread:
+            # Primary: find the highlighted comment thread (loaded via &lc=)
+            for attempt in range(10):
+                highlighted = page.query_selector(
+                    "ytd-comment-thread-renderer[is-highlighted], "
+                    "ytd-comment-thread-renderer.iron-selected"
+                )
+                if highlighted:
+                    target_thread = highlighted
+                    print(f"  [REPLY] Found highlighted comment (attempt {attempt})")
                     break
-                page.evaluate("window.scrollBy(0, 500)")
-                time.sleep(random.uniform(1.0, 2.0))
+                page.evaluate("window.scrollBy(0, 600)")
+                time.sleep(random.uniform(1.0, 1.8))
+
+            # Fallback: sort newest + similarity search (handles typos from human_type)
+            if not target_thread:
+                _sort_comments_newest(page)
+                norm_snippet = " ".join(comment_text[:120].lower().split()) if comment_text else ""
+                print(f"  [REPLY] Fallback similarity search for: '{comment_text[:80]}'")
+                best_thread = None
+                best_ratio = 0.0
+                for scroll_attempt in range(30):
+                    threads = page.query_selector_all("ytd-comment-thread-renderer")
+                    for thread in threads:
+                        text_el = thread.query_selector("#content-text, yt-formatted-string#content-text")
+                        thread_text = (text_el.inner_text() or "").strip() if text_el else ""
+                        norm_thread = " ".join(thread_text.lower().split())
+                        ratio = difflib.SequenceMatcher(None, norm_snippet, norm_thread[:len(norm_snippet)+40]).ratio()
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_thread = thread
+                        if ratio >= 0.70:
+                            print(f"  [REPLY] Similarity match ({ratio:.2f}) on attempt {scroll_attempt}: '{thread_text[:80]}'")
+                            target_thread = thread
+                            break
+                    if target_thread:
+                        break
+                    page.evaluate("window.scrollBy(0, 800)")
+                    time.sleep(random.uniform(1.0, 2.0))
+                # Accept best match above 0.55 if nothing hit 0.70
+                if not target_thread and best_thread and best_ratio >= 0.55:
+                    print(f"  [REPLY] Using best similarity match ({best_ratio:.2f})")
+                    target_thread = best_thread
 
             if not target_thread:
-                print(f"  [REPLY] ✗ Target comment not found after 12 scrolls — aborting")
+                print(f"  [REPLY] ✗ Target comment not found — aborting")
                 raise Exception("Target comment not found in page — not posting to avoid misfire")
 
             target_thread.scroll_into_view_if_needed()
@@ -626,7 +981,7 @@ def post_reply(video_id: str, parent_comment_id: str, reply_text: str, comment_t
 
             input_el = target_thread.query_selector("#contenteditable-root")
             if not input_el:
-                target_thread.wait_for_selector("#contenteditable-root", timeout=8000)
+                target_thread.wait_for_selector("#contenteditable-root", timeout=20000)
                 input_el = target_thread.query_selector("#contenteditable-root")
 
             human_click_element(page, input_el)
@@ -663,11 +1018,30 @@ def scrape_and_reply(video_id: str, video_title: str, is_replyable_fn, generate_
             print(f"  [WARN] Autoplay navigated away — returning to target video")
             pg.goto(f"https://www.youtube.com/watch?v={video_id}")
             _wait_for_load(pg)
+            _dismiss_consent_banner(pg)
             time.sleep(random.uniform(2, 4))
 
         human_scroll(pg)
 
-        pg.wait_for_selector("ytd-comment-thread-renderer", timeout=15000)
+        # Scroll progressively to trigger comment lazy-loading
+        for _ in range(15):
+            if pg.query_selector("ytd-sort-filter-sub-menu, ytd-comment-thread-renderer"):
+                break
+            pg.evaluate("window.scrollBy(0, 600)")
+            time.sleep(random.uniform(0.5, 1.0))
+
+        # Sort by newest so fresh comments surface (helps find replyable ones)
+        _sort_comments_newest(pg)
+        time.sleep(random.uniform(1.0, 2.0))
+
+        for _ in range(20):
+            if pg.query_selector("ytd-comment-thread-renderer"):
+                break
+            pg.evaluate("window.scrollBy(0, 800)")
+            time.sleep(random.uniform(0.8, 1.5))
+
+        if not pg.query_selector("ytd-comment-thread-renderer"):
+            raise Exception("Comments never loaded on this video")
 
         target_thread = None
         target_text = ""
@@ -710,18 +1084,72 @@ def scrape_and_reply(video_id: str, video_title: str, is_replyable_fn, generate_
         target_thread.scroll_into_view_if_needed()
         time.sleep(random.uniform(0.5, 1.0))
 
+        # Hover over the comment body first — YouTube only shows the Reply button on hover
+        comment_body = target_thread.query_selector("#body, #main, ytd-comment-renderer")
+        if comment_body:
+            try:
+                comment_body.hover()
+                time.sleep(random.uniform(0.4, 0.7))
+            except Exception:
+                pass
+
         reply_btn = target_thread.query_selector("#reply-button-end")
         if not reply_btn:
             raise Exception("Reply button not found on target comment")
-        human_click_element(pg, reply_btn)
-        time.sleep(random.uniform(1.0, 2.0))
 
+        # Hover then click using real mouse coordinates — YouTube's reply box
+        # requires a proper pointer interaction sequence to open the textarea
+        reply_btn.scroll_into_view_if_needed()
+        time.sleep(random.uniform(0.6, 1.0))
+        bbox = reply_btn.bounding_box()
+        if bbox:
+            cx = bbox["x"] + bbox["width"] / 2
+            cy = bbox["y"] + bbox["height"] / 2
+            pg.mouse.move(cx, cy)
+            time.sleep(random.uniform(0.2, 0.4))
+            pg.mouse.click(cx, cy)
+        else:
+            reply_btn.click(force=True)
+        time.sleep(random.uniform(4.0, 6.0))  # VPN adds latency — give YouTube time to open textarea
+
+        # Diagnose what's on the page before waiting
+        _debug_page_state(pg, "after_reply_btn_click")
+
+        # Reply box may render inside or outside the thread element — try both
         input_el = target_thread.query_selector("#contenteditable-root")
         if not input_el:
-            target_thread.wait_for_selector("#contenteditable-root", timeout=8000)
-            input_el = target_thread.query_selector("#contenteditable-root")
+            try:
+                _dismiss_consent_banner(pg)
+                pg.wait_for_selector(
+                    "ytd-comment-simplebox-renderer #contenteditable-root, "
+                    "#reply-dialog #contenteditable-root, "
+                    "#contenteditable-root",
+                    timeout=25000,
+                    state="attached",
+                )
+            except Exception as wait_err:
+                # Capture diagnostic screenshot before retry
+                _debug_page_state(pg, "reply_textarea_timeout")
+                # Retry with mouse click
+                _dismiss_consent_banner(pg)
+                if bbox:
+                    pg.mouse.move(cx, cy)
+                    time.sleep(0.2)
+                    pg.mouse.click(cx, cy)
+                else:
+                    reply_btn.click(force=True)
+                time.sleep(random.uniform(4.0, 6.0))
+                pg.wait_for_selector("#contenteditable-root", timeout=20000, state="attached")
+            input_el = (
+                target_thread.query_selector("#contenteditable-root")
+                or pg.query_selector(
+                    "ytd-comment-simplebox-renderer #contenteditable-root, "
+                    "#reply-dialog #contenteditable-root, "
+                    "#contenteditable-root"
+                )
+            )
 
-        human_click_element(pg, input_el)
+        pg.evaluate("el => { el.focus(); el.click(); }", input_el)
         time.sleep(random.uniform(0.5, 1.0))
 
         _type_reply(pg, reply_text)
@@ -729,8 +1157,12 @@ def scrape_and_reply(video_id: str, video_title: str, is_replyable_fn, generate_
 
         submit_btn = target_thread.query_selector("#submit-button")
         if not submit_btn:
+            submit_btn = pg.query_selector("#submit-button")
+        if not submit_btn:
             raise Exception("Submit button not found in reply box")
-        human_click_element(pg, submit_btn)
+        submit_btn.scroll_into_view_if_needed()
+        time.sleep(random.uniform(0.3, 0.6))
+        submit_btn.click(force=True)
 
         # Wait and verify the reply input cleared (confirms submission went through)
         time.sleep(random.uniform(5.0, 8.0))

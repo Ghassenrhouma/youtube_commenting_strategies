@@ -65,7 +65,7 @@ def run_session(seen_ids: set):
     random.shuffle(candidates)
     video = candidates[0]
     video_id = video["video_id"]
-    video_title = video["title"]
+    video_title = video["video_title"]
 
     if video_id in seen_ids:
         print(f"[S4-A1] Skipping already-seen video: {video_id}")

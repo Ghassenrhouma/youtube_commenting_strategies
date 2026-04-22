@@ -40,6 +40,7 @@ def run_session():
         parent_comment_id=account2_comment_id,
         reply_text=reply,
         comment_text=account2_comment,
+        top_level_comment_text=account1_comment,
     )
     print(f"[S1-A3] Posted — reply_id: {reply_id}")
 

@@ -10,9 +10,10 @@ HEADLESS = os.getenv("HEADLESS", "True").lower() == "true"
 
 
 def get_browser_context(playwright):
-    os.makedirs(PROFILE_PATH, exist_ok=True)
+    profile_path = os.getenv("PROFILE_PATH", "profiles/default")
+    os.makedirs(profile_path, exist_ok=True)
     context = playwright.chromium.launch_persistent_context(
-        user_data_dir=PROFILE_PATH,
+        user_data_dir=profile_path,
         headless=HEADLESS,
         args=[
             "--disable-blink-features=AutomationControlled",
@@ -324,8 +325,8 @@ def human_type(page, selector, text):
             if char in ".,!?;:":
                 # Re-reads after punctuation
                 delay += random.uniform(0.20, 0.55)
-            # Occasional typo: wrong char then backspace
-            if char.isalpha() and random.random() < 0.025:
+            # Occasional typo: wrong char then backspace (~0.8% per letter)
+            if char.isalpha() and random.random() < 0.008:
                 time.sleep(delay)
                 page.keyboard.type(random.choice("abcdefghijklmnopqrstuvwxyz"))
                 time.sleep(random.uniform(0.15, 0.40))

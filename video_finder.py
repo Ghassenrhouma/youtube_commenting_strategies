@@ -19,8 +19,7 @@ TARGET_CHANNELS = [
     {"name": "My Amazon Guy",    "url": "https://www.youtube.com/@myamazonguy/videos"},
     {"name": "Helium 10",        "url": "https://www.youtube.com/@Helium10/videos"},
     {"name": "Dan Vas",          "url": "https://www.youtube.com/@DanVas/videos"},
-    {"name": "Wholesale Ted",    "url": "https://www.youtube.com/@WholesaleTed/videos"},
-    {"name": "Full-Time FBA",    "url": "https://www.youtube.com/@FullTimeFBA/videos"},
+    {"name": "Full-Time FBA",    "url": "https://www.youtube.com/@FullTimeFBA/videos"}
 ]
 
 SEARCH_QUERIES = [
@@ -104,11 +103,44 @@ def _is_english_title(title: str) -> bool:
 
 
 
+def _dismiss_consent_banner(page):
+    """Dismiss YouTube's GDPR consent popup if present (common in Docker/fresh profiles)."""
+    try:
+        # Accept button varies: "Accept all", "I agree", "Agree to all"
+        for selector in [
+            "ytd-consent-bump-v2-lightbox button[aria-label*='Accept']",
+            "ytd-consent-bump-v2-lightbox button[aria-label*='Agree']",
+            "ytd-consent-bump-v2-lightbox .eom-buttons button:first-child",
+            "button[aria-label='Accept all']",
+            "button[aria-label='Agree to all']",
+        ]:
+            btn = page.query_selector(selector)
+            if btn:
+                btn.click()
+                print("  [CONSENT] Dismissed consent banner")
+                time.sleep(random.uniform(1.0, 2.0))
+                return
+        # JS fallback: click first button inside consent lightbox
+        dismissed = page.evaluate("""() => {
+            const lb = document.querySelector('ytd-consent-bump-v2-lightbox');
+            if (!lb) return false;
+            const btn = lb.querySelector('button');
+            if (btn) { btn.click(); return true; }
+            return false;
+        }""")
+        if dismissed:
+            print("  [CONSENT] Dismissed consent banner via JS")
+            time.sleep(random.uniform(1.0, 2.0))
+    except Exception:
+        pass
+
+
 def _human_search(page, query: str):
     """Types query into YouTube search bar like a real human."""
     page.goto("https://www.youtube.com/?hl=en&gl=US")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("domcontentloaded")
     time.sleep(random.uniform(2, 5))
+    _dismiss_consent_banner(page)
 
     # Try multiple search bar selectors
     search_selector = None
@@ -123,8 +155,9 @@ def _human_search(page, query: str):
     if not search_selector:
         # Fallback: navigate directly to search results
         page.goto(f"https://www.youtube.com/results?search_query={quote_plus(query)}&hl=en&gl=US")
-        page.wait_for_load_state("networkidle")
+        page.wait_for_load_state("domcontentloaded")
         time.sleep(random.uniform(2, 4))
+        _dismiss_consent_banner(page)
         return
 
     page.click(search_selector)
@@ -138,7 +171,7 @@ def _human_search(page, query: str):
 
     time.sleep(random.uniform(0.5, 1.5))
     page.keyboard.press("Enter")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("domcontentloaded")
     time.sleep(random.uniform(2, 4))
 
 
@@ -183,7 +216,7 @@ def get_videos_by_keyword(query: str, max_results: int = 5, page=None) -> list:
 
             results.append({
                 "video_id": video_id,
-                "title": title,
+                "video_title": title,
                 "description": description,
                 "channel": channel,
                 "upload_time": upload_time,
@@ -209,7 +242,7 @@ def get_channel_recent_videos(channel_url: str, channel_name: str,
     def _scrape(pg):
         results = []
         pg.goto(channel_url)
-        pg.wait_for_load_state("networkidle")
+        pg.wait_for_load_state("domcontentloaded")
         time.sleep(3)
         for _ in range(3):
             pg.evaluate("window.scrollBy(0, 1000)")
@@ -266,7 +299,7 @@ def get_channel_recent_videos(channel_url: str, channel_name: str,
 
                 results.append({
                     "video_id": video_id,
-                    "title": title,
+                    "video_title": title,
                     "description": "",
                     "channel": channel_name,
                     "upload_time": upload_time,
@@ -360,12 +393,12 @@ def get_popular_videos_for_replies(max_results: int = 5, seen_ids: set = None, p
         for video in videos:
             if video["video_id"] in seen_ids:
                 continue
-            if not _is_english_title(video["title"]):
+            if not _is_english_title(video["video_title"]):
                 continue
-            if _FRENCH_MARKERS.search(video["title"]):
+            if _FRENCH_MARKERS.search(video["video_title"]):
                 continue
             count = _parse_view_count(video.get("view_count_text", ""))
-            print(f"  [DEBUG] Reply candidate: {video['title'][:40]} | views raw: {video.get('view_count_text', '?')} → {count}")
+            print(f"  [DEBUG] Reply candidate: {video['video_title'][:40]} | views raw: {video.get('view_count_text', '?')} → {count}")
             if count >= 5_000:
                 popular.append(video)
             if len(popular) >= max_results:

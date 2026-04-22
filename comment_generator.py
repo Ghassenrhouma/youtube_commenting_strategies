@@ -1,26 +1,47 @@
 import os
 import re
-from openai import OpenAI
+import json
+import urllib.request
+from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
-_client = OpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1",
-)
+_PROXY_URL = os.getenv("GROQ_PROXY_URL")  # e.g. http://host.docker.internal:7860
+if not _PROXY_URL:
+    _client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 _MODEL = "qwen/qwen3-32b"
 
 
 def _call(prompt: str) -> str:
-    response = _client.chat.completions.create(
-        model=_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.9,
-        max_tokens=300,
-    )
-    text = response.choices[0].message.content or ""
+    if _PROXY_URL:
+        # Call the host-side groq_server.py which uses the real IP (bypasses VPN)
+        payload = json.dumps({"prompt": prompt}).encode()
+        req = urllib.request.Request(
+            f"{_PROXY_URL.rstrip('/')}/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+        if "error" in data:
+            raise RuntimeError(data["error"])
+        text = data["text"]
+    else:
+        response = _client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant. Reply directly without any thinking, reasoning, or preamble. Output only the final answer."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.9,
+            max_tokens=800,
+        )
+        text = response.choices[0].message.content or ""
+    # Strip complete <think>...</think> blocks
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Strip any unclosed <think> block (model cut off mid-thought)
+    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)
     text = re.sub(r"[—–\-]", "", text)
     return text.strip()
 
@@ -139,6 +160,46 @@ Write a reply (2 to 4 sentences) that:
 - Does NOT mention DocShipper or any specific brand or service
 - Responds directly to what the previous commenter said without strawmanning their point
 - Sounds like a real person with a legitimate different experience and a well-reasoned view
+
+Write only the reply text. No quotes, no bullet points, no formatting."""
+    return _call(prompt)
+
+
+def generate_s3_counter_a(video_title: str, topic_pair: str, b_comment: str) -> str:
+    parts = [p.strip() for p in topic_pair.split(" vs ")]
+    position_a = parts[0] if parts else topic_pair
+    prompt = f"""You are a viewer continuing a YouTube debate about international trade or e-commerce.
+
+Video title: {video_title}
+Topic debate: {topic_pair}
+Your position: defend "{position_a}"
+The opposing reply you are responding to: "{b_comment}"
+
+Write a reply (2 to 3 sentences) that:
+- Acknowledges the opposing point briefly but firmly reinforces why {position_a} is still the better choice
+- Adds a new specific detail, data point, or personal experience that wasn't mentioned before
+- Does NOT mention DocShipper or any specific brand or service
+- Sounds like a real, confident person who has lived experience with this topic
+
+Write only the reply text. No quotes, no bullet points, no formatting."""
+    return _call(prompt)
+
+
+def generate_s3_counter_b(video_title: str, topic_pair: str, a2_comment: str) -> str:
+    parts = [p.strip() for p in topic_pair.split(" vs ")]
+    position_b = parts[1] if len(parts) > 1 else topic_pair
+    prompt = f"""You are a viewer having the last word in a YouTube debate about international trade or e-commerce.
+
+Video title: {video_title}
+Topic debate: {topic_pair}
+Your position: defend "{position_b}"
+The previous reply you are responding to: "{a2_comment}"
+
+Write a closing reply (1 to 2 sentences) that:
+- Gives a concise, confident final word defending {position_b}
+- Concedes nothing but stays respectful — not aggressive
+- Does NOT mention DocShipper or any specific brand or service
+- Sounds like someone who has made their decision and stands by it
 
 Write only the reply text. No quotes, no bullet points, no formatting."""
     return _call(prompt)
