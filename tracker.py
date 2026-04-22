@@ -18,9 +18,9 @@ _STRATEGY_LABELS = {
 }
 
 _ACCOUNT_LABELS = {
-    "account1": "Seif Masmoudi",
-    "account2": "Amir Driri",
-    "account3": "Clement Bonnefoi",
+    "account1": "Account 1",
+    "account2": "Account 2",
+    "account3": "Account 3",
 }
 
 
