@@ -325,7 +325,10 @@ def _try_like_video(page):
         time.sleep(random.uniform(0.8, 1.5))
 
         # force=True bypasses viewport/actionability checks that headless often fails
-        like_btn.click(force=True)
+        try:
+            like_btn.click(force=True)
+        except Exception:
+            page.evaluate("el => el.click()", like_btn)
 
         time.sleep(random.uniform(1.5, 2.5))
         aria_after = like_btn.get_attribute("aria-pressed")

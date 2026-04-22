@@ -43,6 +43,14 @@ _PROMO = re.compile(
     re.IGNORECASE,
 )
 
+_FRENCH_TITLE = re.compile(
+    r"[àâçéèêëîïôœùûüÿÀÂÇÉÈÊËÎÏÔŒÙÛÜŸ]|"
+    r"\b(les|des|une|pour|dans|avec|sur|qui|que|est|son|ses|leur|leurs|"
+    r"plus|très|bien|avoir|faire|tout|cette|notre|votre|aussi|même|"
+    r"mais|comme|nous|vous|ils|elles|par|au|aux)\b",
+    re.IGNORECASE,
+)
+
 
 def is_replyable_s4(text: str) -> bool:
     if len(text.split()) < 15:
@@ -54,64 +62,84 @@ def is_replyable_s4(text: str) -> bool:
     return True
 
 
+def _is_english_video(title: str) -> bool:
+    if _FRENCH_TITLE.search(title):
+        return False
+    return True
+
+
 def run_session(seen_ids: set):
     print(f"[S4-A1] Finding candidate videos ({len(seen_ids)} already seen)")
-    candidates = get_popular_videos_for_replies(max_results=5, seen_ids=seen_ids)
+    candidates = get_popular_videos_for_replies(max_results=8, seen_ids=seen_ids)
 
     if not candidates:
         print("[S4-A1] No candidate videos found")
         return
 
     random.shuffle(candidates)
-    video = candidates[0]
-    video_id = video["video_id"]
-    video_title = video["video_title"]
 
-    if video_id in seen_ids:
-        print(f"[S4-A1] Skipping already-seen video: {video_id}")
-        return
+    for video in candidates:
+        video_id = video.get("video_id") or video.get("id", "")
+        video_title = video.get("video_title") or video.get("title", "")
 
-    print(f"[S4-A1] Targeting: {video_id} — {video_title[:60]}")
+        if video_id in seen_ids:
+            continue
 
-    if DRY_RUN:
-        print(f"[DRY RUN] Would scan and reply on {video_id}: '{video_title}'")
+        if not _is_english_video(video_title):
+            print(f"[S4-A1] Skipping non-English video: {video_title[:60]}")
+            seen_ids.add(video_id)
+            continue
+
+        print(f"[S4-A1] Targeting: {video_id} — {video_title[:60]}")
+
+        if DRY_RUN:
+            print(f"[DRY RUN] Would scan and reply on {video_id}: '{video_title}'")
+            seen_ids.add(video_id)
+            log_action(
+                strategy=STRATEGY,
+                account=ACCOUNT_ID,
+                video_id=video_id,
+                video_title=video_title,
+                role="replyable",
+                replied_to_comment="(dry run)",
+                text="(dry run)",
+                comment_id="dry_run_id",
+                status="dry_run",
+                dry_run=True,
+            )
+            return
+
+        try:
+            result = scrape_and_reply(
+                video_id=video_id,
+                video_title=video_title,
+                is_replyable_fn=is_replyable_s4,
+                generate_reply_fn=generate_s4_reply,
+            )
+        except Exception as e:
+            print(f"[S4-A1] Skipping {video_id}: {e}")
+            seen_ids.add(video_id)
+            continue
+
         seen_ids.add(video_id)
+        print(f"[S4-A1] Reply posted — comment_id: {result['comment_id']}")
+
         log_action(
             strategy=STRATEGY,
             account=ACCOUNT_ID,
             video_id=video_id,
             video_title=video_title,
             role="replyable",
-            replied_to_comment="(dry run)",
-            text="(dry run)",
-            comment_id="dry_run_id",
-            status="dry_run",
-            dry_run=True,
+            replied_to_comment=result["comment_text"],
+            text=result["reply_text"],
+            comment_id=result["comment_id"],
+            status="posted",
+            dry_run=False,
         )
+        print(f"[S4-A1] Done — logged to tracker")
         return
 
-    result = scrape_and_reply(
-        video_id=video_id,
-        video_title=video_title,
-        is_replyable_fn=is_replyable_s4,
-        generate_reply_fn=generate_s4_reply,
-    )
-    seen_ids.add(video_id)
-    print(f"[S4-A1] Reply posted — comment_id: {result['comment_id']}")
-
-    log_action(
-        strategy=STRATEGY,
-        account=ACCOUNT_ID,
-        video_id=video_id,
-        video_title=video_title,
-        role="replyable",
-        replied_to_comment=result["comment_text"],
-        text=result["reply_text"],
-        comment_id=result["comment_id"],
-        status="posted",
-        dry_run=False,
-    )
-    print(f"[S4-A1] Done — logged to tracker")
+    print("[S4-A1] All candidates exhausted — no replyable video found this session")
 
 
 def main():

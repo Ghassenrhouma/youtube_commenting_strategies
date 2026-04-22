@@ -12,7 +12,8 @@ def login():
         print("Invalid choice. Enter a number between 1 and 10.")
         return
 
-    profile_path = f"profiles/account{account}"
+    env_key = f"PROFILE_ACCOUNT{account}"
+    profile_path = os.getenv(env_key) or os.getenv("PROFILE_PATH") or f"profiles/account{account}"
     os.makedirs(profile_path, exist_ok=True)
 
     print(f"Opening browser for account {account}...")
