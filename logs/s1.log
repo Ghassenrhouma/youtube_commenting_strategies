@@ -1,0 +1,160 @@
+
+============================================================
+[API] Started run_s1_scheduler.py at 2026-04-23T11:17:27.620717+00:00
+[API] Accounts: ['account6', 'account7', 'account9']
+============================================================
+Traceback (most recent call last):
+  File "/app/code/comment_poster.py", line 729, in _execute
+    pg.wait_for_selector("#contenteditable-root", timeout=15000)
+  File "/usr/local/lib/python3.10/dist-packages/playwright/sync_api/_generated.py", line 8217, in wait_for_selector
+    self._sync(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_sync_base.py", line 115, in _sync
+    return task.result()
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_page.py", line 419, in wait_for_selector
+    return await self._main_frame.wait_for_selector(**locals_to_params(locals()))
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_frame.py", line 369, in wait_for_selector
+    await self._channel.send(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TimeoutError: Page.wait_for_selector: Timeout 15000ms exceeded.
+Call log:
+  - waiting for locator("#contenteditable-root") to be visible
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/app/code/s1_account1.py", line 59, in run_session
+    comment_id = post_comment(video_id, comment, video_title=video_title)
+  File "/app/code/comment_poster.py", line 755, in post_comment
+    return _execute(pg)
+  File "/app/code/comment_poster.py", line 732, in _execute
+    raise Exception("Comment input did not open — YouTube may have blocked the interaction")
+Exception: Comment input did not open — YouTube may have blocked the interaction
+[CONFIG] WATCH_MAX=5
+[S1-A1] Processing: 1kgp13McYLc — Amazon Online Arbitrage Product Sourcing MASTERCLASS For 202
+[S1-A1] Generated comment: Just did a couple of online arbitrage drops into France and had a nightmare with shipping costsuntil
+  [HUMAN] Simulated back/forward navigation
+  [HUMAN] Normal watcher — watching 5s / 600s
+  [DEBUG:comment_box_fail] url=https://www.youtube.com/watch?v=1kgp13McYLc
+  [DEBUG:comment_box_fail] sign_in_prompt=True consent=False textarea=False reply_btn=True
+  [DEBUG:comment_box_fail] saved -> /app/code/debug/comment_box_fail.png + .html
+Traceback (most recent call last):
+  File "/app/code/comment_poster.py", line 729, in _execute
+    pg.wait_for_selector("#contenteditable-root", timeout=15000)
+  File "/usr/local/lib/python3.10/dist-packages/playwright/sync_api/_generated.py", line 8217, in wait_for_selector
+    self._sync(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_sync_base.py", line 115, in _sync
+    return task.result()
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_page.py", line 419, in wait_for_selector
+    return await self._main_frame.wait_for_selector(**locals_to_params(locals()))
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_frame.py", line 369, in wait_for_selector
+    await self._channel.send(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TimeoutError: Page.wait_for_selector: Timeout 15000ms exceeded.
+Call log:
+  - waiting for locator("#contenteditable-root") to be visible
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/app/code/s1_account1.py", line 59, in run_session
+    comment_id = post_comment(video_id, comment, video_title=video_title)
+  File "/app/code/comment_poster.py", line 755, in post_comment
+    return _execute(pg)
+  File "/app/code/comment_poster.py", line 732, in _execute
+    raise Exception("Comment input did not open — YouTube may have blocked the interaction")
+Exception: Comment input did not open — YouTube may have blocked the interaction
+[CONFIG] WATCH_MAX=5
+[S1-A1] Processing: 1kgp13McYLc — Amazon Online Arbitrage Product Sourcing MASTERCLASS For 202
+[S1-A1] Generated comment: Just wrapped up a 2025 Q4 FBA dropship from China and the biggest headache was getting the right shi
+  [HUMAN] Skeptical browser — watching 5s / 600s
+  [LIKE] Click sent but state unchanged — may not have registered
+  [DEBUG:comment_box_fail] url=https://www.youtube.com/watch?v=1kgp13McYLc
+  [DEBUG:comment_box_fail] sign_in_prompt=True consent=False textarea=False reply_btn=True
+  [DEBUG:comment_box_fail] saved -> /app/code/debug/comment_box_fail.png + .html
+Traceback (most recent call last):
+  File "/app/code/comment_poster.py", line 729, in _execute
+    pg.wait_for_selector("#contenteditable-root", timeout=15000)
+  File "/usr/local/lib/python3.10/dist-packages/playwright/sync_api/_generated.py", line 8217, in wait_for_selector
+    self._sync(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_sync_base.py", line 115, in _sync
+    return task.result()
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_page.py", line 419, in wait_for_selector
+    return await self._main_frame.wait_for_selector(**locals_to_params(locals()))
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_frame.py", line 369, in wait_for_selector
+    await self._channel.send(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+  File "/usr/local/lib/python3.10/dist-packages/playwright/_impl/_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TimeoutError: Page.wait_for_selector: Timeout 15000ms exceeded.
+Call log:
+  - waiting for locator("#contenteditable-root") to be visible
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/app/code/s1_account1.py", line 59, in run_session
+    comment_id = post_comment(video_id, comment, video_title=video_title)
+  File "/app/code/comment_poster.py", line 755, in post_comment
+    return _execute(pg)
+  File "/app/code/comment_poster.py", line 732, in _execute
+    raise Exception("Comment input did not open — YouTube may have blocked the interaction")
+Exception: Comment input did not open — YouTube may have blocked the interaction
+[CONFIG] WATCH_MAX=5
+[S1-A1] Processing: 1kgp13McYLc — Amazon Online Arbitrage Product Sourcing MASTERCLASS For 202
+[S1-A1] Generated comment: Man, I remember trying to ship a bunch of electronics from China to the US for Amazon back in 2023 a
+  [HUMAN] Engaged watcher — watching 5s / 600s
+  [LIKE] Click sent but state unchanged — may not have registered
+  [DEBUG:comment_box_fail] url=https://www.youtube.com/watch?v=1kgp13McYLc
+  [DEBUG:comment_box_fail] sign_in_prompt=True consent=False textarea=False reply_btn=True
+  [DEBUG:comment_box_fail] saved -> /app/code/debug/comment_box_fail.png + .html
+
+============================================================
+[API] Started run_s1_scheduler.py at 2026-04-23T11:29:30.322053+00:00
+[API] Accounts: ['account3', 'account4', 'account9']
+============================================================
+[CONFIG] WATCH_MAX=5
+[S1-A1] Processing: 1kgp13McYLc — Amazon Online Arbitrage Product Sourcing MASTERCLASS For 202
+[S1-A1] Generated comment: I tried sourcing products from a vendor in China last year for my Amazon FBA business, and the shipm
+  [AD] Ad detected — waiting...
+  [AD] Skipping ad...
+  [AD] Ad finished
+  [HUMAN] Engaged watcher — watching 5s / 5429s
+  [LIKE] ✓ Liked
+  [COMMENT ID] Scraped: Ugz9dF4fwALuLUGKz6B4AaABAg
+[S1-A1] Posted — comment_id: Ugz9dF4fwALuLUGKz6B4AaABAg
+  [COORD] Written 10 records to /app/code/targets_s1.json
+[S1-A1] Done — status set to a_done
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/app/code/s1_account2.py", line 37, in run_session
+    reply_id = post_reply(
+  File "/app/code/comment_poster.py", line 1090, in post_reply
+    raise Exception("Target comment not found in page — not posting to avoid misfire")
+Exception: Target comment not found in page — not posting to avoid misfire
+[CONFIG] WATCH_MAX=5
+[S1-A2] Processing: 1kgp13McYLc — Amazon Online Arbitrage Product Sourcing MASTERCLASS For 202
+[S1-A2] Generated reply: I’ve been in the same boat with international shipments getting stuck in customs, and I tried DocShi
+  [AD] Ad detected — waiting...
+  [AD] Skipping ad...
+  [HUMAN] Quick commenter — watching 5s / 58s
+  [REPLY] Sorted by: 'Les plus récents
+                
+      '
+  [REPLY] Sorted by: 'Les plus récents
+                
+      '
+  [REPLY] Fallback similarity search for: 'I tried sourcing products from a vendor in China last year for my Amazon FBA bus'
+  [REPLY] ✗ Target comment not found — aborting

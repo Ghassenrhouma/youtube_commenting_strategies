@@ -6,13 +6,11 @@ Start with: uvicorn api:app --host 0.0.0.0 --port 8000
 import os
 import subprocess
 import signal
-import psutil
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import gspread
 
 load_dotenv()
 
@@ -24,99 +22,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Constants ──────────────────────────────────────────────────────────────────
+CONTAINER_NAME = os.getenv("CONTAINER_NAME", "unknown")
 
-CONTAINER_NAME = os.getenv("CONTAINER_NAME", "unknown")  # set in docker-compose
-
-PROFILE_PATHS = {
-    "account1": os.getenv("PROFILE_ACCOUNT1", "/app/profiles/account1"),
-    "account2": os.getenv("PROFILE_ACCOUNT2", "/app/profiles/account2"),
-    "account3": os.getenv("PROFILE_ACCOUNT3", "/app/profiles/account3"),
+# Scheduler script per strategy
+SCHEDULER_MAP: dict[str, str] = {
+    "s1": "run_s1_scheduler.py",
+    "s2": "run_s2_scheduler.py",
+    "s3": "run_s3_scheduler.py",
+    "s4": "run_s4_scheduler.py",
 }
 
-# Maps (strategy, account) → the script filename
-SCRIPT_MAP = {
-    ("s1", "account1"): "s1_account1.py",
-    ("s1", "account2"): "s1_account2.py",
-    ("s1", "account3"): "s1_account3.py",
-    ("s2", "account1"): "s2_account1.py",
-    ("s2", "account2"): "s2_account2.py",
-    ("s3", "account1"): "s3_account1.py",
-    ("s3", "account2"): "s3_account2.py",
-    ("s4", "account1"): "s4_account1.py",
+# Expected number of accounts per strategy
+STRATEGY_ROLES: dict[str, int] = {
+    "s1": 3,
+    "s2": 2,
+    "s3": 2,
+    "s4": 1,
 }
 
-STRATEGY_LABELS = {
-    "s1": "Thread Building",
-    "s2": "Depth Escalation",
-    "s3": "Staged Disagreement",
-    "s4": "Replayable Comment",
-}
-
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-SERVICE_ACCOUNT_PATH = os.getenv("SERVICE_ACCOUNT_PATH", "service_account.json")
-
-# pid → {strategy, account, started_at, script}
+# pid → {strategy, accounts, script, started_at}
 _running: dict[int, dict] = {}
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _check_profile(account: str) -> bool:
-    """Return True if the profile folder exists (lightweight check, no browser launch)."""
-    path = PROFILE_PATHS.get(account, "")
-    return os.path.isdir(path)
+def _profile_path(account: str) -> str:
+    return f"/app/profiles/{account}"
 
 
-def _profile_status(account: str) -> str:
-    """active if profile folder exists, else needs_login."""
-    return "active" if _check_profile(account) else "needs_login"
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def _cleanup_dead():
-    """Remove processes that have exited from the running registry."""
-    dead = [pid for pid, _ in _running.items() if not psutil.pid_exists(pid)]
+    dead = [pid for pid in _running if not _pid_exists(pid)]
     for pid in dead:
         _running.pop(pid, None)
 
 
-# ── Models ─────────────────────────────────────────────────────────────────────
-
 class LaunchRequest(BaseModel):
-    strategy: str   # "s1" | "s2" | "s3" | "s4"
-    account: str    # "account1" | "account2" | "account3"
-    dry_run: bool = False
-    skip_delays: bool = False
+    strategy: str        # "s1" | "s2" | "s3" | "s4"
+    accounts: list[str]  # ordered by role e.g. ["account4", "account7", "account9"]
 
 
 class StopRequest(BaseModel):
     strategy: str
-    account: str
 
-
-# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/status")
 def get_status():
-    """
-    Returns container identity, all account profile states,
-    and every currently running bot process.
-    """
     _cleanup_dead()
-    accounts = [
-        {
-            "id": account,
-            "label": f"Account {account[-1]}",
-            "profile_path": PROFILE_PATHS[account],
-            "status": _profile_status(account),
-        }
-        for account in PROFILE_PATHS
-    ]
     processes = [
         {
             "pid": pid,
             "strategy": info["strategy"],
-            "account": info["account"],
+            "accounts": info["accounts"],
             "script": info["script"],
             "started_at": info["started_at"],
             "uptime_s": int((datetime.now(timezone.utc) - datetime.fromisoformat(info["started_at"])).total_seconds()),
@@ -125,63 +87,75 @@ def get_status():
     ]
     return {
         "container": CONTAINER_NAME,
-        "accounts": accounts,
         "running": processes,
     }
 
 
 @app.post("/launch")
 def launch(req: LaunchRequest):
-    """Start a bot script for the given strategy + account."""
     _cleanup_dead()
 
-    key = (req.strategy, req.account)
-    script = SCRIPT_MAP.get(key)
-    if not script:
-        raise HTTPException(status_code=400, detail=f"No script for {req.strategy} / {req.account}")
+    expected = STRATEGY_ROLES.get(req.strategy)
+    if expected is None:
+        raise HTTPException(status_code=400, detail=f"Unknown strategy: {req.strategy}")
+    if len(req.accounts) != expected:
+        raise HTTPException(status_code=400, detail=f"{req.strategy} requires {expected} account(s), got {len(req.accounts)}")
 
-    # Prevent duplicate — same strategy+account already running
+    # Prevent duplicate
     for pid, info in _running.items():
-        if info["strategy"] == req.strategy and info["account"] == req.account:
-            raise HTTPException(status_code=409, detail=f"Already running (pid {pid})")
+        if info["strategy"] == req.strategy:
+            raise HTTPException(status_code=409, detail=f"{req.strategy} already running (pid {pid})")
 
-    if not _check_profile(req.account):
-        raise HTTPException(status_code=412, detail=f"Profile for {req.account} not found — run login.py first")
-
-    script_path = os.path.join(os.path.dirname(__file__), script)
+    script = SCHEDULER_MAP[req.strategy]
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
     if not os.path.exists(script_path):
-        raise HTTPException(status_code=404, detail=f"Script not found: {script}")
+        raise HTTPException(status_code=404, detail=f"Scheduler not found: {script}")
 
+    # Validate all profiles exist
+    for account in req.accounts:
+        profile = _profile_path(account)
+        if not os.path.isdir(profile):
+            raise HTTPException(status_code=412, detail=f"Profile not found: {profile} — run login.py first")
+
+    # Pass accounts as PROFILE_ACCOUNT1, PROFILE_ACCOUNT2, PROFILE_ACCOUNT3
     env = os.environ.copy()
-    env["DRY_RUN"] = "true" if req.dry_run else "false"
-    env["SKIP_DELAYS"] = "true" if req.skip_delays else "false"
-    env["PROFILE_PATH"] = PROFILE_PATHS[req.account]
+    for i, account in enumerate(req.accounts):
+        env[f"PROFILE_ACCOUNT{i + 1}"] = _profile_path(account)
+
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"{req.strategy}.log")
+
+    log_file = open(log_path, "a")
+    log_file.write(f"\n{'='*60}\n[API] Started {script} at {datetime.now(timezone.utc).isoformat()}\n")
+    log_file.write(f"[API] Accounts: {req.accounts}\n{'='*60}\n")
+    log_file.flush()
 
     proc = subprocess.Popen(
         ["python3", script_path],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
         start_new_session=True,
     )
 
     _running[proc.pid] = {
         "strategy": req.strategy,
-        "account": req.account,
+        "accounts": req.accounts,
         "script": script,
         "started_at": datetime.now(timezone.utc).isoformat(),
+        "log": log_path,
     }
 
-    return {"pid": proc.pid, "script": script, "started": True}
+    return {"pid": proc.pid, "script": script, "accounts": req.accounts, "started": True, "log": log_path}
 
 
 @app.post("/stop")
 def stop(req: StopRequest):
-    """Stop all running processes for the given strategy + account."""
     _cleanup_dead()
     stopped = []
     for pid, info in list(_running.items()):
-        if info["strategy"] == req.strategy and info["account"] == req.account:
+        if info["strategy"] == req.strategy:
             try:
                 os.killpg(os.getpgid(pid), signal.SIGTERM)
             except Exception:
@@ -196,54 +170,14 @@ def stop(req: StopRequest):
     return {"stopped_pids": stopped}
 
 
-@app.get("/logs")
-def get_logs(strategy: str = None, account: str = None, days: int = 14):
-    """
-    Pull rows from Google Sheet for the performance charts.
-    Returns daily aggregates for the last N days.
-    """
-    if not GOOGLE_SHEET_ID:
-        raise HTTPException(status_code=503, detail="GOOGLE_SHEET_ID not configured")
-    try:
-        client = gspread.service_account(filename=SERVICE_ACCOUNT_PATH)
-        sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
-        rows = sheet.get_all_values()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Sheet error: {e}")
-
-    # Sheet columns: timestamp | strategy | account | video_id | video_link | role | comment_id
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    buckets: dict[str, dict] = {}
-
-    for row in rows[1:]:
-        if len(row) < 3:
-            continue
-        try:
-            ts = datetime.fromisoformat(row[0]).replace(tzinfo=timezone.utc)
-        except Exception:
-            continue
-        if ts < cutoff:
-            continue
-        if strategy and row[1] != STRATEGY_LABELS.get(strategy, strategy):
-            continue
-        if account and row[2] != f"Account {account[-1]}":
-            continue
-
-        day_key = ts.strftime("%Y-%m-%d")
-        if day_key not in buckets:
-            buckets[day_key] = {"day": day_key, "comments": 0, "replies": 0}
-        role = row[5].lower() if len(row) > 5 else ""
-        if "reply" in role or "challenger" in role or "closer" in role or "replyable" in role:
-            buckets[day_key]["replies"] += 1
-        else:
-            buckets[day_key]["comments"] += 1
-
-    series = sorted(buckets.values(), key=lambda x: x["day"])
-    totals = {
-        "comments": sum(d["comments"] for d in series),
-        "replies": sum(d["replies"] for d in series),
-    }
-    return {"series": series, "totals": totals, "container": CONTAINER_NAME}
+@app.get("/logs/{strategy}")
+def get_log(strategy: str, lines: int = 50):
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", f"{strategy}.log")
+    if not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail=f"No log for {strategy} yet")
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        all_lines = f.readlines()
+    return {"strategy": strategy, "lines": all_lines[-lines:]}
 
 
 @app.get("/health")

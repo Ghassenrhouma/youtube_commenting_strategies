@@ -5,8 +5,7 @@ import random
 from dotenv import load_dotenv
 
 load_dotenv()
-os.environ["PROFILE_PATH"] = os.getenv("PROFILE_ACCOUNT2", "profiles/account2")
-
+os.environ.setdefault("PROFILE_PATH", "/app/profiles/account2")
 DRY_RUN = os.getenv("DRY_RUN", "True").lower() == "true"
 SKIP_DELAYS = os.getenv("SKIP_DELAYS", "False").lower() == "true"
 ACCOUNT_ID = "account2"

@@ -25,13 +25,12 @@ PROFILE1 = os.getenv("PROFILE_ACCOUNT1", "profiles/account1")
 PROFILE2 = os.getenv("PROFILE_ACCOUNT2", "profiles/account2")
 PROFILE3 = os.getenv("PROFILE_ACCOUNT3", "profiles/account3")
 
-ACTIVE_START = 8   # 08:00
-ACTIVE_END   = 17  # 17:00 (5 PM) — no runs at or after this hour
+ACTIVE_START = 8 # 08:00
+ACTIVE_END   = 19  # 17:00 (5 PM) — no runs at or after this hour
 
 
 def _is_active_hour() -> bool:
     return ACTIVE_START <= datetime.now().hour < ACTIVE_END
-
 
 def _wait_until_active():
     """Block until we are inside the active window."""

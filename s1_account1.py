@@ -6,7 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
-os.environ["PROFILE_PATH"] = os.getenv("PROFILE_ACCOUNT1", "profiles/account1")
+os.environ.setdefault("PROFILE_PATH", "/app/profiles/account1")
 
 DRY_RUN = os.getenv("DRY_RUN", "True").lower() == "true"
 SKIP_DELAYS = os.getenv("SKIP_DELAYS", "False").lower() == "true"
